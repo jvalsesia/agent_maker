@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---------- Builder ----------
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.95-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN rustup target add wasm32-unknown-unknown
 
 # Pin dioxus-cli to a 0.7.x release matching the project's dioxus version.
-ARG DIOXUS_CLI_VERSION=0.7.0
+ARG DIOXUS_CLI_VERSION=0.7.9
 RUN cargo install dioxus-cli --version ${DIOXUS_CLI_VERSION} --locked
 
 WORKDIR /app
@@ -21,8 +21,8 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY Dioxus.toml clippy.toml ./
 RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
- && cargo build --release --features server --no-default-features \
- ; rm -rf src
+    && cargo build --release --features server --no-default-features \
+    ; rm -rf src
 
 # Real sources + assets + migrations
 COPY src ./src
@@ -33,9 +33,14 @@ COPY migrations ./migrations
 RUN dx bundle --platform web --release
 
 # Locate the bundle output dir (dioxus-cli paths shift slightly across releases).
+# Expected layout under the resolved dir:
+#   ./server      (server binary)
+#   ./public/     (static assets served by the binary)
 RUN set -eux; \
     OUT="$(find target/dx -type d -name web | head -n1)"; \
     test -n "$OUT"; \
+    echo "bundle output: $OUT"; ls -la "$OUT"; \
+    test -x "$OUT/server" || { echo "ERROR: expected server binary at $OUT/server"; ls -la "$OUT"; exit 1; }; \
     mkdir -p /out && cp -R "$OUT"/. /out/
 
 # ---------- Runtime ----------
@@ -61,6 +66,8 @@ ENV PORT=8080 \
 
 EXPOSE 8080
 
-# dx bundle places the server binary at the root of the web bundle directory.
-# Name matches the [package] name in Cargo.toml.
-CMD ["/app/server/agent_maker"]
+# dx bundle (web + server) writes the server binary named literally `server`
+# at the root of the bundle, alongside a `public/` directory of static assets.
+# The server expects to be run from the bundle root so it can find `public/`.
+WORKDIR /app
+CMD ["/app/server"]

@@ -139,6 +139,23 @@ docker ps --filter name=agent-pg
 psql "$DATABASE_URL" -c "SELECT 1;"
 ```
 
+**`exec: "/app/server/agent_maker": stat /app/server/agent_maker: not a directory`**
+
+You're on a stale image where the `Dockerfile` assumed `dx bundle` wrote the server binary under `server/<crate-name>`. Dioxus 0.7.x actually writes a binary literally named `server` at the bundle root (with assets in `public/`). The current `Dockerfile` uses `CMD ["/app/server"]` and asserts the binary exists during the build. Rebuild without cache to pick it up:
+
+```bash
+docker compose build --no-cache app
+docker compose up -d
+```
+
+If the build itself fails with `ERROR: expected server binary at .../server`, your `dioxus-cli` version laid the bundle out differently — inspect with:
+
+```bash
+docker compose build --progress=plain app 2>&1 | grep -A3 "bundle output:"
+```
+
+and adjust `CMD` in the `Dockerfile` to match the printed listing.
+
 ### Tailwind
 
 As of Dioxus 0.7, `dx serve` compiles Tailwind automatically by picking up `tailwind.css` (next to `Cargo.toml`, or under `assets/`). No `npx tailwindcss --watch` step is required.
