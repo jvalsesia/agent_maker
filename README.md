@@ -2,7 +2,7 @@
 
 A Dioxus 0.7 fullstack app for building and chatting with simple LLM agents.
 
-The home page shows a dashboard of agent cards. Opening an agent swaps the view to a full-screen chat window that streams replies through an OpenAI model via [`rig-core`](https://crates.io/crates/rig-core) on the server side. The client never sees the API key — calls go through Dioxus server functions.
+The home page shows a dashboard of agent cards loaded from Postgres. Click **+ New Agent** to create one (name + preamble + initial prompt are persisted server-side), or click any card to open a full-screen chat window that streams replies through an OpenAI model via [`rig-core`](https://crates.io/crates/rig-core) on the server side. The client never sees the API key — calls go through Dioxus server functions.
 
 ## Project layout
 
@@ -14,16 +14,18 @@ agent_maker/
 │  ├─ components/
 │  │  ├─ mod.rs
 │  │  ├─ home.rs           # Home → renders Dashboard
-│  │  ├─ dashboard.rs      # Grid of AgentCards
+│  │  ├─ dashboard.rs      # Grid of AgentCards; loads list via list_agents, hosts NewAgentModal
 │  │  ├─ agent_card.rs     # Single agent card (avatar, name, preamble, Open/Edit)
+│  │  ├─ new_agent_modal.rs # Modal form for creating a new agent
+│  │  ├─ ui.rs             # Shared primitives: Button, Card, Heading, Label
 │  │  ├─ chat_window.rs    # Full-screen wrapper around ChatComponent
 │  │  ├─ chat.rs           # Chat UI; calls chat_with_llm server fn
 │  │  ├─ navbar.rs         # Shared navbar (route layout)
 │  │  └─ blog.rs           # Demo /blog/:id route
 │  ├─ models/
 │  │  └─ agent_model.rs    # AgentModel { id, name, preamble, prompt, response }
-│  ├─ memory.rs            # Postgres + pgvector chat memory (append/load/recall)
-│  └─ server_fns.rs        # #[server] chat_with_llm + load_history + ChatTurn (rig-core, gpt-4o)
+│  ├─ memory.rs            # Postgres + pgvector: chat_turns + agents tables
+│  └─ server_fns.rs        # #[server] list_agents, create_agent, load_history, chat_with_llm
 ├─ Cargo.toml
 ├─ Dioxus.toml
 ├─ clippy.toml             # bans GenerationalRef / WriteLock across await
@@ -42,6 +44,8 @@ Server-only dependencies (`rig-core`, `sqlx`, `pgvector`, `tokio`, `anyhow`) are
 ## Chat memory (Postgres + pgvector)
 
 Per-agent chat history lives in Postgres. Each user/assistant turn is stored with an OpenAI `text-embedding-ada-002` embedding (1536 dims) in a single `chat_turns` table indexed by `agent_id`. On each chat call, the most recent turns are sent verbatim and older turns are pulled in via top-k cosine similarity (`recall`) so the agent has long-term context without blowing up the prompt.
+
+Agents themselves are also persisted, in an `agents` table (`id TEXT PRIMARY KEY, name, preamble, prompt, created_ms`). The id is a server-side UUID and matches `chat_turns.agent_id`. Migration `0002_agents.sql` seeds a `General Assistant` row so the dashboard is never empty on a fresh DB.
 
 **Requirements**
 
@@ -120,6 +124,21 @@ dx serve
 ```
 
 Note: the `.env` file is consumed by `docker compose` only. Don't copy the compose-style URL (`@postgres:5432/...`) into your host shell — `postgres` resolves only inside the compose network. From the host use `@localhost:5432/...`.
+
+**Dashboard is empty / `Failed to load agents: relation "agents" does not exist`**
+
+You're running against a database that was initialised before `0002_agents.sql` existed. `sqlx::migrate!()` will apply the new migration on next start, so usually it's enough to restart the server. If you're on Docker and the volume is stuck in a weird state, nuke it:
+
+```bash
+docker compose down -v   # drops the pgdata volume
+docker compose up --build
+```
+
+Or apply it by hand against the existing DB:
+
+```bash
+psql "$DATABASE_URL" -f migrations/0002_agents.sql
+```
 
 **`relation "chat_turns" does not exist` / `type "vector" does not exist`**
 

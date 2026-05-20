@@ -3,11 +3,57 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
 use crate::memory;
+use crate::models::agent_model::AgentModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatTurn {
     pub role: String,
     pub content: String,
+}
+
+/// Server function: list all persisted agents (oldest first).
+///
+/// Maps each [`memory::AgentRow`] to a client-facing [`AgentModel`], leaving
+/// the transient `response` field empty (it is populated by the UI as chat
+/// progresses, never by the server).
+#[server]
+pub async fn list_agents() -> Result<Vec<AgentModel>, ServerFnError> {
+    let rows = memory::list_agents()
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| AgentModel {
+            id: r.id,
+            name: r.name,
+            preamble: r.preamble,
+            prompt: r.prompt,
+            response: String::new(),
+        })
+        .collect())
+}
+
+/// Server function: persist a new agent.
+///
+/// The `id` and `created_ms` are assigned server-side, so any value the
+/// client may have generated locally is discarded. Returns the canonical
+/// [`AgentModel`] the caller should append to its in-memory list.
+#[server]
+pub async fn create_agent(
+    name: String,
+    preamble: String,
+    prompt: String,
+) -> Result<AgentModel, ServerFnError> {
+    let row = memory::create_agent(&name, &preamble, &prompt)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(AgentModel {
+        id: row.id,
+        name: row.name,
+        preamble: row.preamble,
+        prompt: row.prompt,
+        response: String::new(),
+    })
 }
 
 /// Load this agent's full persisted chat transcript (oldest first).

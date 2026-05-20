@@ -26,14 +26,20 @@ Tailwind is handled automatically by `dx serve` (picks up [tailwind.css](assets/
 - **Module layout**:
   - [src/components/](src/components/) — UI components, re-exported through [src/components/mod.rs](src/components/mod.rs):
     - `Home` → wraps `Dashboard`.
-    - `Dashboard` — grid of `AgentCard`s; clicking an agent swaps the view to a full-screen `ChatWindow`.
+    - `Dashboard` — fetches the agent list via `use_server_future(list_agents)` on first paint, keeps a local `Signal<Vec<AgentModel>>` for subsequent mutations, surfaces loader errors inline, and renders a `+ New Agent` button that opens `NewAgentModal`. Clicking an agent card swaps the view to a full-screen `ChatWindow`.
     - `AgentCard` — card with avatar, name, preamble preview, Open/Edit actions.
+    - `NewAgentModal` — modal form (name / preamble / prompt). Calls back to `Dashboard` via `EventHandler<AgentModel>`; persistence is done by `Dashboard` through the `create_agent` server function (the modal does not call server fns itself).
     - `ChatWindow` — header + responsive container that hosts `ChatComponent`.
     - `ChatComponent` — message list + input; calls `chat_with_llm` server function and preserves history as `Vec<ChatTurn>`.
+    - `ui` — shared primitives (`Button`/`ButtonVariant`, `Card`, `Heading`/`HeadingLevel`, `Label`). Use these instead of hand-rolling Tailwind on every callsite so the look stays consistent.
     - `Navbar`, `Blog` — shared chrome and demo route.
   - [src/models/agent_model.rs](src/models/agent_model.rs) — `AgentModel { id, name, preamble, prompt, response }`, `Serialize + Deserialize + Clone + PartialEq`.
-  - [src/server_fns.rs](src/server_fns.rs) — server-only LLM glue. `ChatTurn { role, content }`, `#[server] load_history(agent_id)` and `#[server] chat_with_llm(agent_id, preamble, prompt)` built on `rig_core::providers::openai` with model `gpt-4o`. Recent turns are sent verbatim (`RECENT_WINDOW = 12`); older turns are surfaced via top-k semantic recall (`RECALL_K = 4`) and injected into the preamble.
-  - [src/memory.rs](src/memory.rs) — per-agent chat memory on Postgres + pgvector. Lazy `PgPool` via `tokio::sync::OnceCell`, bootstrapped schema (`chat_turns(id, agent_id, role, content, ts_ms, embedding vector(1536))` + HNSW cosine index). Public API: `append_turns`, `load_history`, `recall`. Embeddings come from OpenAI `text-embedding-ada-002` (cast to `f32` for pgvector); change `EMBED_MODEL` / `EMBED_DIMS` together if you switch models.
+  - [src/server_fns.rs](src/server_fns.rs) — server-only LLM and agent glue. `ChatTurn { role, content }`; `#[server]` fns: `list_agents()`, `create_agent(name, preamble, prompt)`, `load_history(agent_id)`, `chat_with_llm(agent_id, preamble, prompt)`. Chat is built on `rig_core::providers::openai` with model `gpt-4o`. Recent turns are sent verbatim (`RECENT_WINDOW = 12`); older turns are surfaced via top-k semantic recall (`RECALL_K = 4`) and injected into the preamble. `id` and `created_ms` for new agents are assigned server-side — any client-provided id is discarded.
+  - [src/memory.rs](src/memory.rs) — Postgres + pgvector layer. Lazy `PgPool` via `tokio::sync::OnceCell`, schema bootstrapped by `sqlx::migrate!()`. Two domains:
+    - Chat: `chat_turns(id, agent_id, role, content, ts_ms, embedding vector(1536))` + HNSW cosine index. API: `append_turns`, `load_history`, `recall`.
+    - Agents: `agents(id TEXT PK, name, preamble, prompt, created_ms)` + `agents_created_idx`. API: `AgentRow`, `list_agents`, `create_agent`. The `id` is a server-side `Uuid::new_v4()` stored as TEXT to match `chat_turns.agent_id`.
+
+    Embeddings come from OpenAI `text-embedding-ada-002` (cast to `f32` for pgvector); change `EMBED_MODEL` / `EMBED_DIMS` together if you switch models.
 - **Fullstack split**: features `web` (default) and `server` (default) compile different binaries from the same source. `rig-core` is gated behind `server` so it never enters the wasm bundle. Server functions become HTTP calls on the client and endpoints on the server — keep them callable from both sides.
 - **Assets**: reference via the `asset!("/assets/...")` macro (paths relative to the project root, always start with `/`). Files live in [assets/](assets/).
 - **State**: Dioxus 0.7 idioms only — `use_signal`, `use_memo`, `use_resource`, `use_context_provider` / `use_context`. The old `cx`, `Scope`, and `use_state` APIs are gone. Use `use_server_future` (not `use_resource`) when the value must be available on the first hydrated render to avoid client/server divergence.
@@ -50,7 +56,11 @@ Tailwind is handled automatically by `dx serve` (picks up [tailwind.css](assets/
   - `app`: built from the local `Dockerfile`, `depends_on: postgres (service_healthy)`, gets `DATABASE_URL` pointing at the compose-internal `postgres` hostname and `OPENAI_API_KEY` from `.env` (required — compose fails fast if unset).
 - [.env.example](.env.example) — canonical env shape: `OPENAI_API_KEY`, `POSTGRES_USER`/`PASSWORD`/`DB`, `APP_PORT`, `RUST_LOG`. Copy to `.env` before `docker compose up`.
 - [.dockerignore](.dockerignore) — keeps `target/`, `data/`, `.git`, docs, and env files out of the build context to keep image builds reproducible and fast.
-- [migrations/](migrations/) — sqlx-compatible SQL migrations. `0001_init.sql` enables `vector`, creates `chat_turns`, and adds the HNSW cosine index. Add new files as `000N_<name>.sql`; they're applied in lexicographic order by `sqlx::migrate!()` on next server start.
+- [migrations/](migrations/) — sqlx-compatible SQL migrations, applied in lexicographic order by `sqlx::migrate!()` on next server start.
+  - `0001_init.sql` — enables `vector`, creates `chat_turns`, adds the HNSW cosine index.
+  - `0002_agents.sql` — creates the `agents` table + `agents_created_idx`, and seeds a `General Assistant` row (id `00000000-0000-4000-8000-000000000001`) via `INSERT … ON CONFLICT (id) DO NOTHING` so first-time users have something to chat with.
+
+  Add new files as `000N_<name>.sql`; never edit applied ones (sqlx records hashes).
 
 ## Operational notes
 

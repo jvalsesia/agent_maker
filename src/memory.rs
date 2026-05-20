@@ -103,6 +103,68 @@ pub async fn load_history(agent_id: &str) -> Result<Vec<(String, String)>> {
     Ok(rows)
 }
 
+/// A row from the `agents` table.
+///
+/// Mirrors the persisted shape: client-side [`AgentModel`](crate::models::agent_model::AgentModel)
+/// adds a transient `response` field that lives only in the UI.
+#[derive(Debug, Clone)]
+pub struct AgentRow {
+    pub id: String,
+    pub name: String,
+    pub preamble: String,
+    pub prompt: String,
+}
+
+/// Return every persisted agent, ordered oldest-first by `created_ms`
+/// (ties broken by `id`).
+pub async fn list_agents() -> Result<Vec<AgentRow>> {
+    let pool = pool().await?;
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT id, name, preamble, prompt FROM agents
+         ORDER BY created_ms ASC, id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, preamble, prompt)| AgentRow {
+            id,
+            name,
+            preamble,
+            prompt,
+        })
+        .collect())
+}
+
+/// Insert a new agent. The `id` is a server-side [`Uuid::new_v4`] so the
+/// caller cannot poison it, and `created_ms` is the current Unix time in
+/// milliseconds. Returns the inserted row so the caller doesn't need a
+/// follow-up `SELECT`.
+pub async fn create_agent(name: &str, preamble: &str, prompt: &str) -> Result<AgentRow> {
+    let id = Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as i64;
+    let pool = pool().await?;
+    sqlx::query(
+        "INSERT INTO agents (id, name, preamble, prompt, created_ms)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(preamble)
+    .bind(prompt)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(AgentRow {
+        id,
+        name: name.to_string(),
+        preamble: preamble.to_string(),
+        prompt: prompt.to_string(),
+    })
+}
+
 /// Top-k semantically-similar past turns for `query` within `agent_id`.
 pub async fn recall(agent_id: &str, query: &str, k: usize) -> Result<Vec<(String, String)>> {
     let client = openai::Client::from_env()?;

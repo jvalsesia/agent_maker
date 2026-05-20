@@ -7,10 +7,12 @@ Provide concise code examples with detailed descriptions
 Fullstack agent dashboard. Layout:
 
 - [src/main.rs](src/main.rs) — `App`, `Route` enum (`Home {}`, `Blog { id }`), stylesheet links.
-- [src/components/](src/components/) — `Home`, `Dashboard`, `AgentCard`, `ChatWindow`, `ChatComponent`, `Navbar`, `Blog` (re-exported via `mod.rs`).
+- [src/components/](src/components/) — `Home`, `Dashboard`, `AgentCard`, `NewAgentModal`, `ChatWindow`, `ChatComponent`, `Navbar`, `Blog`, plus shared UI primitives in [`ui.rs`](src/components/ui.rs) (`Button`, `ButtonVariant`, `Card`, `Heading`, `HeadingLevel`, `Label`). All re-exported via `mod.rs`.
 - [src/models/agent_model.rs](src/models/agent_model.rs) — `AgentModel { id, name, preamble, prompt, response }`.
-- [src/server_fns.rs](src/server_fns.rs) — `#[server] chat_with_llm(agent_id, preamble, prompt)` and `load_history(agent_id)`, using `rig-core` + OpenAI `gpt-4o`; `ChatTurn { role, content }`.
-- [src/memory.rs](src/memory.rs) — per-agent chat memory on Postgres + pgvector. Public API: `append_turns`, `load_history`, `recall` (top-k cosine over embeddings). Embedding model: `text-embedding-ada-002` (1536 dims).
+- [src/server_fns.rs](src/server_fns.rs) — `#[server]` glue: `list_agents()`, `create_agent(name, preamble, prompt)`, `load_history(agent_id)`, `chat_with_llm(agent_id, preamble, prompt)`. Uses `rig-core` + OpenAI `gpt-4o`; `ChatTurn { role, content }`.
+- [src/memory.rs](src/memory.rs) — Postgres + pgvector layer. Chat: `append_turns`, `load_history`, `recall` (top-k cosine). Agents: `AgentRow`, `list_agents`, `create_agent`. Embedding model: `text-embedding-ada-002` (1536 dims).
+
+Dashboard flow: `Dashboard` uses `use_server_future(list_agents)` for the initial list (SSR-safe), keeps an in-memory `Signal<Vec<AgentModel>>` for mutations, and shows `NewAgentModal` on `+ New Agent`; submissions go through `create_agent` and are appended on success. Loader errors are surfaced inline.
 
 `rig-core`, `sqlx`, and `pgvector` are gated behind the `server` feature; default features are `web` + `server`. Server env: `OPENAI_API_KEY` (LLM + embeddings) and `DATABASE_URL` (Postgres with the `vector` extension installed).
 
