@@ -1,0 +1,163 @@
+# agent_maker
+
+A Dioxus 0.7 fullstack app for building and chatting with simple LLM agents.
+
+The home page shows a dashboard of agent cards. Opening an agent swaps the view to a full-screen chat window that streams replies through an OpenAI model via [`rig-core`](https://crates.io/crates/rig-core) on the server side. The client never sees the API key — calls go through Dioxus server functions.
+
+## Project layout
+
+```
+agent_maker/
+├─ assets/                 # favicon, tailwind.css, main.css
+├─ src/
+│  ├─ main.rs              # entry point, Route enum, App component
+│  ├─ components/
+│  │  ├─ mod.rs
+│  │  ├─ home.rs           # Home → renders Dashboard
+│  │  ├─ dashboard.rs      # Grid of AgentCards
+│  │  ├─ agent_card.rs     # Single agent card (avatar, name, preamble, Open/Edit)
+│  │  ├─ chat_window.rs    # Full-screen wrapper around ChatComponent
+│  │  ├─ chat.rs           # Chat UI; calls chat_with_llm server fn
+│  │  ├─ navbar.rs         # Shared navbar (route layout)
+│  │  └─ blog.rs           # Demo /blog/:id route
+│  ├─ models/
+│  │  └─ agent_model.rs    # AgentModel { id, name, preamble, prompt, response }
+│  ├─ memory.rs            # Postgres + pgvector chat memory (append/load/recall)
+│  └─ server_fns.rs        # #[server] chat_with_llm + load_history + ChatTurn (rig-core, gpt-4o)
+├─ Cargo.toml
+├─ Dioxus.toml
+├─ clippy.toml             # bans GenerationalRef / WriteLock across await
+├─ AGENTS.md               # Dioxus 0.7 API cheat sheet
+└─ CLAUDE.md               # Guidance for Claude Code
+```
+
+## Features
+
+- `web` (default) — client-side wasm bundle.
+- `server` (default) — Axum server binary, pulls in `rig-core` for OpenAI calls and `sqlx` + `pgvector` for chat memory.
+- `desktop` / `mobile` — alternate platform builds (no `rig-core`, no memory layer).
+
+Server-only dependencies (`rig-core`, `sqlx`, `pgvector`, `tokio`, `anyhow`) are `optional` and only enabled by the `server` feature, so they never land in the wasm output.
+
+## Chat memory (Postgres + pgvector)
+
+Per-agent chat history lives in Postgres. Each user/assistant turn is stored with an OpenAI `text-embedding-ada-002` embedding (1536 dims) in a single `chat_turns` table indexed by `agent_id`. On each chat call, the most recent turns are sent verbatim and older turns are pulled in via top-k cosine similarity (`recall`) so the agent has long-term context without blowing up the prompt.
+
+**Requirements**
+
+- A reachable Postgres database (local, Docker, or managed).
+- The [`pgvector`](https://github.com/pgvector/pgvector) extension installed on that database (pgvector ≥ 0.5.0 for the HNSW index used by the bootstrap; downgrade the index to `ivfflat` if you're on an older version).
+- `DATABASE_URL` exported in the server environment.
+
+**Quick start with Docker**
+
+```bash
+docker run -d --name agent-pg \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=agent_maker \
+  -p 5432:5432 \
+  pgvector/pgvector:pg16
+
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/agent_maker
+```
+
+The schema lives in [`migrations/`](migrations/) and is applied automatically on first DB connect via `sqlx::migrate!()` — no manual step needed. The initial migration enables the `vector` extension and creates the `chat_turns` table plus an HNSW cosine index. If your DB role can't `CREATE EXTENSION`, install pgvector once as a superuser before starting the server (the `pgvector/pgvector` Docker image already includes it).
+
+## Docker
+
+A multi-stage [`Dockerfile`](Dockerfile) builds the production web bundle with `dx bundle --platform web --release`, and [`docker-compose.yml`](docker-compose.yml) wires up Postgres (with pgvector) alongside the app.
+
+```bash
+cp .env.example .env       # then edit OPENAI_API_KEY (and credentials if you like)
+docker compose up --build
+```
+
+The app listens on `http://localhost:${APP_PORT:-8080}`. Postgres data persists in the `pgdata` volume. Migrations run automatically on app startup.
+
+To rebuild from clean state:
+
+```bash
+docker compose down -v     # also drops the pgdata volume
+docker compose up --build
+```
+
+## Running
+
+```bash
+export OPENAI_API_KEY=sk-...
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/agent_maker
+dx serve                       # web (default)
+dx serve --platform desktop    # or mobile
+```
+
+Without `OPENAI_API_KEY` the dashboard still renders but `chat_with_llm` will error. Without `DATABASE_URL` (or if Postgres is unreachable) both `load_history` and `chat_with_llm` will return an error — the UI keeps working, just without persistence.
+
+### Troubleshooting
+
+**`Error: error running server function: DATABASE_URL must be set for chat memory`**
+
+The server process couldn't read `DATABASE_URL` from its environment. `dx serve` does **not** auto-load `.env` files — it only inherits env vars from the shell that launched it. Fix it by exporting both vars in the same shell, then restarting `dx serve`:
+
+```bash
+export OPENAI_API_KEY=sk-...
+export DATABASE_URL=postgres://postgres:postgres@localhost:5432/agent_maker
+dx serve
+```
+
+Verify the shell actually has them before launching:
+
+```bash
+echo "$DATABASE_URL"
+# postgres://postgres:postgres@localhost:5432/agent_maker
+```
+
+Or set them inline for a one-shot run:
+
+```bash
+OPENAI_API_KEY=sk-... \
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/agent_maker \
+dx serve
+```
+
+Note: the `.env` file is consumed by `docker compose` only. Don't copy the compose-style URL (`@postgres:5432/...`) into your host shell — `postgres` resolves only inside the compose network. From the host use `@localhost:5432/...`.
+
+**`relation "chat_turns" does not exist` / `type "vector" does not exist`**
+
+The pgvector extension isn't installed on the target database. Either use the `pgvector/pgvector:pg16` image (recommended) or install pgvector manually and let the migrations run on next start. Verify with:
+
+```bash
+psql "$DATABASE_URL" -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+# expect one row: vector
+```
+
+**Connection refused / timeout**
+
+Confirm Postgres is up and the port is reachable:
+
+```bash
+docker ps --filter name=agent-pg
+psql "$DATABASE_URL" -c "SELECT 1;"
+```
+
+### Tailwind
+
+As of Dioxus 0.7, `dx serve` compiles Tailwind automatically by picking up `tailwind.css` (next to `Cargo.toml`, or under `assets/`). No `npx tailwindcss --watch` step is required.
+
+To customise the input/output paths, edit `Dioxus.toml`:
+
+```toml
+[application]
+tailwind_input = "my.css"
+tailwind_output = "assets/out.css"
+```
+
+## Development commands
+
+```bash
+cargo build                      # default features: web + server
+cargo build --features desktop
+cargo clippy --all-targets
+cargo fmt
+```
+
+See [CLAUDE.md](CLAUDE.md) for architecture notes and [AGENTS.md](AGENTS.md) for the Dioxus 0.7 API reference this project is written against.
