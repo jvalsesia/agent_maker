@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "server")]
 use crate::memory;
 use crate::models::agent_model::AgentModel;
+use crate::models::skill_model::SkillModel;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ChatTurn {
@@ -56,6 +57,73 @@ pub async fn create_agent(
     })
 }
 
+/// Server function: list all persisted skills (oldest first).
+#[server]
+pub async fn list_skills() -> Result<Vec<SkillModel>, ServerFnError> {
+    let rows = memory::list_skills()
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SkillModel {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            instructions: r.instructions,
+            created_ms: r.created_ms,
+        })
+        .collect())
+}
+
+/// Server function: persist a new skill. `id` and `created_ms` are assigned
+/// server-side.
+#[server]
+pub async fn create_skill(
+    name: String,
+    description: String,
+    instructions: String,
+) -> Result<SkillModel, ServerFnError> {
+    let row = memory::create_skill(&name, &description, &instructions)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(SkillModel {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        instructions: row.instructions,
+        created_ms: row.created_ms,
+    })
+}
+
+/// Server function: update an existing skill in place.
+#[server]
+pub async fn update_skill(
+    id: String,
+    name: String,
+    description: String,
+    instructions: String,
+) -> Result<SkillModel, ServerFnError> {
+    let row = memory::update_skill(&id, &name, &description, &instructions)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(SkillModel {
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        instructions: row.instructions,
+        created_ms: row.created_ms,
+    })
+}
+
+/// Server function: delete a skill. Cascades through `agent_skills`.
+#[server]
+pub async fn delete_skill(id: String) -> Result<(), ServerFnError> {
+    memory::delete_skill(&id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+}
+
 /// Load this agent's full persisted chat transcript (oldest first).
 #[server]
 pub async fn load_history(agent_id: String) -> Result<Vec<ChatTurn>, ServerFnError> {
@@ -84,6 +152,20 @@ pub async fn chat_with_llm(
     const RECENT_WINDOW: usize = 12;
     // Semantic recall: top-k older turns retrieved by similarity to the prompt.
     const RECALL_K: usize = 4;
+
+    let skills = memory::list_agent_skill_instructions(&agent_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    let skill_block: String = skills
+        .iter()
+        .map(|(name, instr)| format!("## Skill: {name}\n{instr}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let preamble = if skill_block.is_empty() {
+        preamble
+    } else {
+        format!("{preamble}\n\n{skill_block}")
+    };
 
     let full = memory::load_history(&agent_id)
         .await

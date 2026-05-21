@@ -165,6 +165,124 @@ pub async fn create_agent(name: &str, preamble: &str, prompt: &str) -> Result<Ag
     })
 }
 
+/// A row from the `skills` table.
+#[derive(Debug, Clone)]
+pub struct SkillRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub instructions: String,
+    pub created_ms: i64,
+}
+
+/// Return every persisted skill, ordered oldest-first by `created_ms`.
+pub async fn list_skills() -> Result<Vec<SkillRow>> {
+    let pool = pool().await?;
+    let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, name, description, instructions, created_ms FROM skills
+         ORDER BY created_ms ASC, id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, name, description, instructions, created_ms)| SkillRow {
+                id,
+                name,
+                description,
+                instructions,
+                created_ms,
+            },
+        )
+        .collect())
+}
+
+/// Insert a new skill. `id` and `created_ms` are server-assigned.
+pub async fn create_skill(
+    name: &str,
+    description: &str,
+    instructions: &str,
+) -> Result<SkillRow> {
+    let id = Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as i64;
+    let pool = pool().await?;
+    sqlx::query(
+        "INSERT INTO skills (id, name, description, instructions, created_ms)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(description)
+    .bind(instructions)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(SkillRow {
+        id,
+        name: name.to_string(),
+        description: description.to_string(),
+        instructions: instructions.to_string(),
+        created_ms: now,
+    })
+}
+
+/// Update a skill in place. Returns the updated row.
+pub async fn update_skill(
+    id: &str,
+    name: &str,
+    description: &str,
+    instructions: &str,
+) -> Result<SkillRow> {
+    let pool = pool().await?;
+    let row: (String, String, String, String, i64) = sqlx::query_as(
+        "UPDATE skills SET name = $2, description = $3, instructions = $4
+         WHERE id = $1
+         RETURNING id, name, description, instructions, created_ms",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(description)
+    .bind(instructions)
+    .fetch_one(pool)
+    .await?;
+    Ok(SkillRow {
+        id: row.0,
+        name: row.1,
+        description: row.2,
+        instructions: row.3,
+        created_ms: row.4,
+    })
+}
+
+/// Delete a skill. The `agent_skills` rows referencing it cascade away.
+pub async fn delete_skill(id: &str) -> Result<()> {
+    let pool = pool().await?;
+    sqlx::query("DELETE FROM skills WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Instructions of every skill attached to `agent_id`, ordered by skill
+/// creation time so the preamble assembly is deterministic.
+pub async fn list_agent_skill_instructions(agent_id: &str) -> Result<Vec<(String, String)>> {
+    let pool = pool().await?;
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT s.name, s.instructions FROM skills s
+         JOIN agent_skills a ON a.skill_id = s.id
+         WHERE a.agent_id = $1
+         ORDER BY s.created_ms ASC, s.id ASC",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Top-k semantically-similar past turns for `query` within `agent_id`.
 pub async fn recall(agent_id: &str, query: &str, k: usize) -> Result<Vec<(String, String)>> {
     let client = openai::Client::from_env()?;
