@@ -5,7 +5,7 @@ mod components;
 mod memory;
 mod models;
 mod server_fns;
-use components::{Blog, Home, Navbar, SkillsDashboard};
+use components::{Home, Navbar, SkillsDashboard};
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -15,8 +15,6 @@ pub enum Route {
     Home {},
     #[route("/skills")]
     SkillsDashboard {},
-    #[route("/blog/:id")]
-    Blog { id: i32 },
 }
 
 const FAVICON: Asset = asset!("/assets/favicon.ico");

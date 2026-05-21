@@ -22,22 +22,27 @@ Tailwind is handled automatically by `dx serve` (picks up [tailwind.css](assets/
 ## Architecture
 
 - **Entry point**: `dioxus::launch(App)` in [src/main.rs](src/main.rs). `App` mounts stylesheets via `document::Link` and renders `Router::<Route>`.
-- **Routing**: single `Route` enum derives `Routable`. `#[layout(Navbar)]` wraps all routes; `Navbar` renders `Outlet::<Route> {}`. Routes: `Home {}` (the agents dashboard) and `Blog { id: i32 }`.
+- **Routing**: single `Route` enum derives `Routable`. `#[layout(Navbar)]` wraps all routes; `Navbar` renders `Outlet::<Route> {}` and exposes top-level links to `Home` and `SkillsDashboard`. Routes: `Home {}` (the agents dashboard), `SkillsDashboard {}` (`/skills`), and `Blog { id: i32 }`.
 - **Module layout**:
   - [src/components/](src/components/) — UI components, re-exported through [src/components/mod.rs](src/components/mod.rs):
     - `Home` → wraps `Dashboard`.
     - `Dashboard` — fetches the agent list via `use_server_future(list_agents)` on first paint, keeps a local `Signal<Vec<AgentModel>>` for subsequent mutations, surfaces loader errors inline, and renders a `+ New Agent` button that opens `NewAgentModal`. Clicking an agent card swaps the view to a full-screen `ChatWindow`.
     - `AgentCard` — card with avatar, name, preamble preview, Open/Edit actions.
-    - `NewAgentModal` — modal form (name / preamble / prompt). Calls back to `Dashboard` via `EventHandler<AgentModel>`; persistence is done by `Dashboard` through the `create_agent` server function (the modal does not call server fns itself).
+    - `NewAgentModal` / `EditAgentModal` — modal forms (name / preamble / prompt + skill selection). Call back to `Dashboard` via `EventHandler<AgentModel>`; persistence is done by `Dashboard` through `create_agent` / update server functions (the modals do not call server fns themselves). Skill attachment is performed alongside save.
+    - `SkillsDashboard` — `/skills` page: fetches skills via `use_server_future(list_skills)`, keeps a local `Signal<Vec<SkillModel>>` for mutations, renders a grid of `SkillCard`s and a `+ New Skill` button that opens `NewSkillModal`. Edit/delete are dispatched through `EditSkillModal`.
+    - `SkillCard` — card with name, description preview, Edit/Delete actions.
+    - `NewSkillModal` / `EditSkillModal` — modal forms (name / description / instructions). Calls back to `SkillsDashboard` via `EventHandler`; persistence happens in the dashboard through `create_skill` / `update_skill` / `delete_skill` server functions.
     - `ChatWindow` — header + responsive container that hosts `ChatComponent`.
     - `ChatComponent` — message list + input; calls `chat_with_llm` server function and preserves history as `Vec<ChatTurn>`.
     - `ui` — shared primitives (`Button`/`ButtonVariant`, `Card`, `Heading`/`HeadingLevel`, `Label`). Use these instead of hand-rolling Tailwind on every callsite so the look stays consistent.
     - `Navbar`, `Blog` — shared chrome and demo route.
   - [src/models/agent_model.rs](src/models/agent_model.rs) — `AgentModel { id, name, preamble, prompt, response }`, `Serialize + Deserialize + Clone + PartialEq`.
-  - [src/server_fns.rs](src/server_fns.rs) — server-only LLM and agent glue. `ChatTurn { role, content }`; `#[server]` fns: `list_agents()`, `create_agent(name, preamble, prompt)`, `load_history(agent_id)`, `chat_with_llm(agent_id, preamble, prompt)`. Chat is built on `rig_core::providers::openai` with model `gpt-4o`. Recent turns are sent verbatim (`RECENT_WINDOW = 12`); older turns are surfaced via top-k semantic recall (`RECALL_K = 4`) and injected into the preamble. `id` and `created_ms` for new agents are assigned server-side — any client-provided id is discarded.
+  - [src/models/skill_model.rs](src/models/skill_model.rs) — `SkillModel { id, name, description, instructions, created_ms }`, `Serialize + Deserialize + Clone + PartialEq`.
+  - [src/server_fns.rs](src/server_fns.rs) — server-only LLM, agent, and skill glue. `ChatTurn { role, content }`; `#[server]` fns: `list_agents()`, `create_agent(name, preamble, prompt)`, `load_history(agent_id)`, `chat_with_llm(agent_id, preamble, prompt)`, plus skill CRUD (`list_skills`, `create_skill`, `update_skill`, `delete_skill`) and agent↔skill linking. Chat is built on `rig_core::providers::openai` with model `gpt-4o`. Recent turns are sent verbatim (`RECENT_WINDOW = 12`); older turns are surfaced via top-k semantic recall (`RECALL_K = 4`) and injected into the preamble. `id` and `created_ms` for new agents are assigned server-side — any client-provided id is discarded.
   - [src/memory.rs](src/memory.rs) — Postgres + pgvector layer. Lazy `PgPool` via `tokio::sync::OnceCell`, schema bootstrapped by `sqlx::migrate!()`. Two domains:
     - Chat: `chat_turns(id, agent_id, role, content, ts_ms, embedding vector(1536))` + HNSW cosine index. API: `append_turns`, `load_history`, `recall`.
     - Agents: `agents(id TEXT PK, name, preamble, prompt, created_ms)` + `agents_created_idx`. API: `AgentRow`, `list_agents`, `create_agent`. The `id` is a server-side `Uuid::new_v4()` stored as TEXT to match `chat_turns.agent_id`.
+    - Skills: `skills(id TEXT PK, name, description, instructions, created_ms)` + `skills_created_idx`, with a many-to-many `agent_skills(agent_id, skill_id)` join table (`ON DELETE CASCADE` on both sides, `agent_skills_skill_idx` for reverse lookups). API: `SkillRow`, `list_skills`, `create_skill`, `update_skill`, `delete_skill`, plus agent-skill attach/detach helpers. Skills are plain-text instruction bundles concatenated into an agent's preamble at chat time, so they compose with the existing recall-augmented preamble injection.
 
     Embeddings come from OpenAI `text-embedding-ada-002` (cast to `f32` for pgvector); change `EMBED_MODEL` / `EMBED_DIMS` together if you switch models.
 - **Fullstack split**: features `web` (default) and `server` (default) compile different binaries from the same source. `rig-core` is gated behind `server` so it never enters the wasm bundle. Server functions become HTTP calls on the client and endpoints on the server — keep them callable from both sides.
@@ -59,6 +64,7 @@ Tailwind is handled automatically by `dx serve` (picks up [tailwind.css](assets/
 - [migrations/](migrations/) — sqlx-compatible SQL migrations, applied in lexicographic order by `sqlx::migrate!()` on next server start.
   - `0001_init.sql` — enables `vector`, creates `chat_turns`, adds the HNSW cosine index.
   - `0002_agents.sql` — creates the `agents` table + `agents_created_idx`, and seeds a `General Assistant` row (id `00000000-0000-4000-8000-000000000001`) via `INSERT … ON CONFLICT (id) DO NOTHING` so first-time users have something to chat with.
+  - `0003_skills.sql` — creates the `skills` table + `skills_created_idx`, and the `agent_skills` join table (PK `(agent_id, skill_id)`, both FKs `ON DELETE CASCADE`) + `agent_skills_skill_idx` for skill→agent lookups.
 
   Add new files as `000N_<name>.sql`; never edit applied ones (sqlx records hashes).
 
