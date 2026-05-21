@@ -124,6 +124,32 @@ pub async fn delete_skill(id: String) -> Result<(), ServerFnError> {
     Ok(())
 }
 
+/// Attach a skill to an agent. Idempotent.
+#[server]
+pub async fn attach_skill(agent_id: String, skill_id: String) -> Result<(), ServerFnError> {
+    memory::attach_skill(&agent_id, &skill_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+}
+
+/// Detach a skill from an agent. Idempotent.
+#[server]
+pub async fn detach_skill(agent_id: String, skill_id: String) -> Result<(), ServerFnError> {
+    memory::detach_skill(&agent_id, &skill_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
+    Ok(())
+}
+
+/// IDs of every skill attached to `agent_id`.
+#[server]
+pub async fn list_agent_skill_ids(agent_id: String) -> Result<Vec<String>, ServerFnError> {
+    memory::list_agent_skill_ids(&agent_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))
+}
+
 /// Load this agent's full persisted chat transcript (oldest first).
 #[server]
 pub async fn load_history(agent_id: String) -> Result<Vec<ChatTurn>, ServerFnError> {

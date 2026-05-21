@@ -4,10 +4,15 @@ use crate::models::agent_model::AgentModel;
 
 /// A single agent card on the dashboard.
 #[component]
-pub fn AgentCard(agent: AgentModel, on_open: EventHandler<AgentModel>) -> Element {
+pub fn AgentCard(
+    agent: AgentModel,
+    on_open: EventHandler<AgentModel>,
+    on_edit: EventHandler<AgentModel>,
+) -> Element {
     let initial = agent.name.chars().next().unwrap_or('A');
     let id_short: String = agent.id.chars().take(8).collect();
     let open_agent = agent.clone();
+    let edit_agent = agent.clone();
 
     rsx! {
         div {
@@ -31,6 +36,7 @@ pub fn AgentCard(agent: AgentModel, on_open: EventHandler<AgentModel>) -> Elemen
                 }
                 button {
                     class: "text-sm text-gray-500 hover:text-gray-700 font-medium",
+                    onclick: move |_| on_edit.call(edit_agent.clone()),
                     "Edit"
                 }
             }

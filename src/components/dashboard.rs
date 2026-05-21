@@ -1,8 +1,8 @@
 use dioxus::prelude::*;
 
-use crate::components::{AgentCard, Button, ChatWindow, Heading, NewAgentModal};
+use crate::components::{AgentCard, Button, ChatWindow, EditAgentModal, Heading, NewAgentModal};
 use crate::models::agent_model::AgentModel;
-use crate::server_fns::{create_agent, list_agents};
+use crate::server_fns::{attach_skill, create_agent, detach_skill, list_agents};
 
 /// Dashboard listing agents as desktop-style cards.
 #[component]
@@ -11,14 +11,11 @@ pub fn Dashboard() -> Element {
     let mut loaded = use_signal(|| false);
     let mut active_agent = use_signal(|| None::<AgentModel>);
     let mut show_new_modal = use_signal(|| false);
+    let mut editing = use_signal(|| None::<AgentModel>);
     let mut error = use_signal(|| None::<String>);
 
-    // Initial load — runs on the server during SSR so the first paint already
-    // contains the agent list and hydration doesn't diverge.
     let loader = use_server_future(list_agents)?;
 
-    // Copy the loaded list into our local signal once, so subsequent mutations
-    // (creating new agents) can extend it without re-fetching.
     use_effect(move || {
         if !loaded() {
             match loader.value().read().as_ref() {
@@ -63,17 +60,23 @@ pub fn Dashboard() -> Element {
                     AgentCard {
                         agent: agent.clone(),
                         on_open: move |a: AgentModel| active_agent.set(Some(a)),
+                        on_edit: move |a: AgentModel| editing.set(Some(a)),
                     }
                 }
             }
 
             if show_new_modal() {
                 NewAgentModal {
-                    on_create: move |a: AgentModel| {
-                        // EventHandler is sync; spawn the async persistence task.
+                    on_create: move |(a, skill_ids): (AgentModel, Vec<String>)| {
                         spawn(async move {
                             match create_agent(a.name, a.preamble, a.prompt).await {
                                 Ok(saved) => {
+                                    let aid = saved.id.clone();
+                                    for sid in skill_ids {
+                                        if let Err(e) = attach_skill(aid.clone(), sid).await {
+                                            error.set(Some(format!("Failed to attach skill: {e}")));
+                                        }
+                                    }
                                     agents.write().push(saved);
                                     show_new_modal.set(false);
                                     error.set(None);
@@ -83,6 +86,31 @@ pub fn Dashboard() -> Element {
                         });
                     },
                     on_close: move |_| show_new_modal.set(false),
+                }
+            }
+
+            if let Some(current) = editing() {
+                EditAgentModal {
+                    agent: current,
+                    on_save: move |(aid, to_attach, to_detach): (String, std::collections::HashSet<String>, std::collections::HashSet<String>)| {
+                        spawn(async move {
+                            for sid in to_attach {
+                                if let Err(e) = attach_skill(aid.clone(), sid).await {
+                                    error.set(Some(format!("Failed to attach skill: {e}")));
+                                    return;
+                                }
+                            }
+                            for sid in to_detach {
+                                if let Err(e) = detach_skill(aid.clone(), sid).await {
+                                    error.set(Some(format!("Failed to detach skill: {e}")));
+                                    return;
+                                }
+                            }
+                            editing.set(None);
+                            error.set(None);
+                        });
+                    },
+                    on_close: move |_| editing.set(None),
                 }
             }
         }

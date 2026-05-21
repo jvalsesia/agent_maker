@@ -267,6 +267,42 @@ pub async fn delete_skill(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Attach a skill to an agent. Idempotent (no-op if already attached).
+pub async fn attach_skill(agent_id: &str, skill_id: &str) -> Result<()> {
+    let pool = pool().await?;
+    sqlx::query(
+        "INSERT INTO agent_skills (agent_id, skill_id) VALUES ($1, $2)
+         ON CONFLICT (agent_id, skill_id) DO NOTHING",
+    )
+    .bind(agent_id)
+    .bind(skill_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Detach a skill from an agent. Idempotent.
+pub async fn detach_skill(agent_id: &str, skill_id: &str) -> Result<()> {
+    let pool = pool().await?;
+    sqlx::query("DELETE FROM agent_skills WHERE agent_id = $1 AND skill_id = $2")
+        .bind(agent_id)
+        .bind(skill_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// IDs of every skill attached to `agent_id`.
+pub async fn list_agent_skill_ids(agent_id: &str) -> Result<Vec<String>> {
+    let pool = pool().await?;
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT skill_id FROM agent_skills WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(s,)| s).collect())
+}
+
 /// Instructions of every skill attached to `agent_id`, ordered by skill
 /// creation time so the preamble assembly is deterministic.
 pub async fn list_agent_skill_instructions(agent_id: &str) -> Result<Vec<(String, String)>> {

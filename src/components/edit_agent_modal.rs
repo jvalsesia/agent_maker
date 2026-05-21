@@ -1,56 +1,58 @@
 use dioxus::prelude::*;
 use std::collections::HashSet;
-use uuid::Uuid;
 
 use crate::components::{Button, ButtonVariant, Heading, HeadingLevel};
 use crate::models::agent_model::AgentModel;
 use crate::models::skill_model::SkillModel;
-use crate::server_fns::list_skills;
+use crate::server_fns::{list_agent_skill_ids, list_skills};
 
-/// Modal dialog with a form to create a new agent.
+/// Modal for managing the skills attached to an existing agent.
 ///
-/// Fields: **Name** (required), **Preamble** (required), **Default prompt**
-/// (optional), and a multi-select **Skills** picker. The chosen skill IDs are
-/// returned alongside the new agent so the caller can attach them after
-/// persistence.
+/// Loads the full skill catalog and the agent's currently-attached skill IDs,
+/// then on Save fires `on_save` with the new desired set. The caller diffs it
+/// against the prior state and issues attach/detach calls.
 #[component]
-pub fn NewAgentModal(
-    on_create: EventHandler<(AgentModel, Vec<String>)>,
+pub fn EditAgentModal(
+    agent: AgentModel,
+    on_save: EventHandler<(String, HashSet<String>, HashSet<String>)>,
     on_close: EventHandler<()>,
 ) -> Element {
-    let mut name = use_signal(String::new);
-    let mut preamble = use_signal(String::new);
-    let mut prompt = use_signal(String::new);
-    let mut error = use_signal(|| None::<String>);
-    let mut skills = use_signal(Vec::<SkillModel>::new);
-    let mut selected = use_signal(HashSet::<String>::new);
+    let agent_id = agent.id.clone();
+    let agent_name = agent.name.clone();
 
-    use_future(move || async move {
-        if let Ok(list) = list_skills().await {
-            skills.set(list);
+    let mut skills = use_signal(Vec::<SkillModel>::new);
+    let mut original = use_signal(HashSet::<String>::new);
+    let mut selected = use_signal(HashSet::<String>::new);
+    let mut loaded = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+
+    let load_id = agent_id.clone();
+    use_future(move || {
+        let aid = load_id.clone();
+        async move {
+            match list_skills().await {
+                Ok(list) => skills.set(list),
+                Err(e) => error.set(Some(format!("Failed to load skills: {e}"))),
+            }
+            match list_agent_skill_ids(aid).await {
+                Ok(ids) => {
+                    let set: HashSet<String> = ids.into_iter().collect();
+                    original.set(set.clone());
+                    selected.set(set);
+                    loaded.set(true);
+                }
+                Err(e) => error.set(Some(format!("Failed to load agent skills: {e}"))),
+            }
         }
     });
 
+    let save_id = agent_id.clone();
     let submit = move |_| {
-        let n = name().trim().to_string();
-        let p = preamble().trim().to_string();
-        if n.is_empty() {
-            error.set(Some("Name is required.".into()));
-            return;
-        }
-        if p.is_empty() {
-            error.set(Some("Preamble is required.".into()));
-            return;
-        }
-        let agent = AgentModel {
-            id: Uuid::new_v4().to_string(),
-            name: n,
-            preamble: p,
-            prompt: prompt().trim().to_string(),
-            response: String::new(),
-        };
-        let ids: Vec<String> = selected().iter().cloned().collect();
-        on_create.call((agent, ids));
+        let prev = original();
+        let curr = selected();
+        let to_attach: HashSet<String> = curr.difference(&prev).cloned().collect();
+        let to_detach: HashSet<String> = prev.difference(&curr).cloned().collect();
+        on_save.call((save_id.clone(), to_attach, to_detach));
     };
 
     rsx! {
@@ -62,7 +64,7 @@ pub fn NewAgentModal(
                 onclick: move |e| e.stop_propagation(),
 
                 div { class: "flex items-center justify-between",
-                    Heading { level: HeadingLevel::H2, "New Agent" }
+                    Heading { level: HeadingLevel::H2, "Edit Agent" }
                     Button {
                         variant: ButtonVariant::Ghost,
                         onclick: move |_| on_close.call(()),
@@ -70,54 +72,30 @@ pub fn NewAgentModal(
                     }
                 }
 
-                div { class: "flex flex-col gap-1",
-                    label { class: "text-sm font-medium text-gray-700", "Name" }
-                    input {
-                        class: "border border-gray-300 rounded-lg p-2 w-full",
-                        placeholder: "e.g. Research Assistant",
-                        value: "{name}",
-                        oninput: move |e| name.set(e.value()),
-                    }
-                }
-
-                div { class: "flex flex-col gap-1",
-                    label { class: "text-sm font-medium text-gray-700", "Preamble" }
-                    textarea {
-                        class: "border border-gray-300 rounded-lg p-2 w-full min-h-24",
-                        placeholder: "You are a helpful assistant that...",
-                        value: "{preamble}",
-                        oninput: move |e| preamble.set(e.value()),
-                    }
-                }
-
-                div { class: "flex flex-col gap-1",
-                    label { class: "text-sm font-medium text-gray-700", "Default prompt (optional)" }
-                    textarea {
-                        class: "border border-gray-300 rounded-lg p-2 w-full min-h-16",
-                        placeholder: "Starter prompt suggestion...",
-                        value: "{prompt}",
-                        oninput: move |e| prompt.set(e.value()),
-                    }
-                }
+                p { class: "text-sm text-gray-600", "Manage skills attached to ", strong { "{agent_name}" }, "." }
 
                 div { class: "flex flex-col gap-1",
                     label { class: "text-sm font-medium text-gray-700", "Skills" }
-                    if skills().is_empty() {
+                    if !loaded() {
+                        p { class: "text-sm text-gray-400", "Loading…" }
+                    } else if skills().is_empty() {
                         p { class: "text-sm text-gray-400", "No skills available yet." }
                     } else {
-                        div { class: "border border-gray-300 rounded-lg p-2 max-h-40 overflow-y-auto flex flex-col gap-1",
+                        div { class: "border border-gray-300 rounded-lg p-2 max-h-72 overflow-y-auto flex flex-col gap-1",
                             for skill in skills().iter() {
                                 {
                                     let sid = skill.id.clone();
                                     let sid_for_check = sid.clone();
                                     let sname = skill.name.clone();
+                                    let sdesc = skill.description.clone();
                                     let is_checked = selected().contains(&sid_for_check);
                                     rsx! {
                                         label {
                                             key: "{sid}",
-                                            class: "flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 rounded px-1 py-0.5",
+                                            class: "flex items-start gap-2 text-sm cursor-pointer hover:bg-gray-50 rounded px-1 py-1",
                                             input {
                                                 r#type: "checkbox",
+                                                class: "mt-0.5",
                                                 checked: is_checked,
                                                 onchange: move |e| {
                                                     let mut s = selected.write();
@@ -128,7 +106,12 @@ pub fn NewAgentModal(
                                                     }
                                                 },
                                             }
-                                            span { "{sname}" }
+                                            div { class: "flex flex-col",
+                                                span { class: "font-medium text-gray-800", "{sname}" }
+                                                if !sdesc.is_empty() {
+                                                    span { class: "text-xs text-gray-500", "{sdesc}" }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -150,7 +133,7 @@ pub fn NewAgentModal(
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: submit,
-                        "Create"
+                        "Save"
                     }
                 }
             }
