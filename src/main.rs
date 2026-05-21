@@ -5,7 +5,7 @@ mod components;
 mod memory;
 mod models;
 mod server_fns;
-use components::{Blog, Home, Navbar};
+use components::{Blog, Home, Navbar, SkillsDashboard};
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -13,6 +13,8 @@ pub enum Route {
     #[layout(Navbar)]
     #[route("/")]
     Home {},
+    #[route("/skills")]
+    SkillsDashboard {},
     #[route("/blog/:id")]
     Blog { id: i32 },
 }

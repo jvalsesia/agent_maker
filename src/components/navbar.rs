@@ -13,6 +13,10 @@ pub fn Navbar() -> Element {
                 "Home"
             }
             Link {
+                to: Route::SkillsDashboard {},
+                "Skills"
+            }
+            Link {
                 to: Route::Blog { id: 1 },
                 "Blog"
             }
